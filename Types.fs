@@ -18,6 +18,13 @@ open ShippingDES.Collections
 type PartNumber = PartNumber of string
 type TrailerId = TrailerId of string
 
+[<RequireQualifiedAccess>]
+type ResourceType =
+    | ReachLift
+    | Lift
+    | Picker
+    | LoadingBay
+
 type Part = {
     PartNumber : PartNumber
     CasePerPallet : int
@@ -59,11 +66,29 @@ type CasePalletOrder = {
     Cases : (int<PartIdx> * int<Cases>)[]
 }
 
-type InventoryRecord<[<Measure>] 'Units> = {
-    Available : int<'Units>
-    OnOrder : int<'Units>
-    Short : int<'Units>
-}
+type InventoryRecord<[<Measure>] 'Units> () =
+    let mutable available : int<'Units> = 0<_>
+    let mutable onOrder : int<'Units> = 0<_>
+    let mutable short : int<'Units> = 0<_>
+
+    member val Available = available
+    member _.AddAvailable x =
+        available <- available + x
+    member _.DeductAvailable x =
+        available <- available - x
+
+    member val OnOrder = onOrder
+    member _.AddOnOrder x =
+        onOrder <- onOrder + x
+    member _.DeductOnOrder x =
+        onOrder <- onOrder - x
+
+    member val Short = short
+    member _.AddShort x =
+        short <- short + x
+    member _.DeductShort x =
+        short <- short - x
+
 
 [<RequireQualifiedAccess>]
 type MoveRequest =
@@ -78,10 +103,21 @@ type OrderPlaced =
     | ReplenishOrder of ReplenishOrder
 
 [<RequireQualifiedAccess>]
-type OrderCompletes =
+type CompleteOrder =
     | FullPalletOrder of FullPalletOrder
     | CasePalletOrder of CasePalletOrder
     | ReplenishOrder of ReplenishOrder
+
+[<RequireQualifiedAccess>]
+type Activity =
+    | PickCaseForAssembly
+    | PickPalletFromStores
+    | LoadPalletIntoAssembly
+    | MoveStoresToCaseAssembly
+    | MoveStoresToShipping
+    | MoveCaseAssemblyToShipping
+
+type CycleTimes = Dictionary<Activity, TimeSpan>
 
 type OpenAllocation<'Order, [<Measure>] 'Units> (order: 'Order, remaining: int<'Units>) =
     let mutable remaining = remaining
@@ -99,8 +135,8 @@ type Stores (reachLiftCount: int) =
     member val ProcessQueue = Queue<StoresOrder>()
 
     member _.FreeReachLifts = reachLifts
-    member _.AllocReachLift = reachLifts <- reachLifts - 1<_>
-    member _.FreeReachLift = reachLifts <- reachLifts + 1<_>
+    member _.AllocReachLift () = reachLifts <- reachLifts - 1<_>
+    member _.FreeReachLift () = reachLifts <- reachLifts + 1<_>
 
 
 type CaseAssembly (partCount: int, pickerCount: int) =
@@ -122,8 +158,8 @@ type CaseAssembly (partCount: int, pickerCount: int) =
     member val RemainingPartsToAllocate = Dictionary<int<OrderId>, int<PartCount>>()
 
     member _.FreePickers = freePickers
-    member _.AllocPicker = freePickers <- freePickers - 1<Picker>
-    member _.FreePicker = freePickers <- freePickers + 1<Picker>
+    member _.AllocPicker () = freePickers <- freePickers - 1<Picker>
+    member _.FreePicker () = freePickers <- freePickers + 1<Picker>
 
 type Shipping (trailerCount: int, loadingBayCount: int) =
     let mutable freeLoadingBays = loadingBayCount * 1<LoadingBay>
@@ -136,10 +172,11 @@ type Shipping (trailerCount: int, loadingBayCount: int) =
 
     member val HasAssignedBay = hasAssignedBay
     member val RemainingPalletsToLoad = remainingPalletsToLoad
+    member val LoadingBayQueue = Queue<Trailer>()
 
     member _.FreeLoadingBays = freeLoadingBays
-    member _.AllocLoadingBay = freeLoadingBays <- freeLoadingBays - 1<LoadingBay>
-    member _.FreeLoadingBay = freeLoadingBays <- freeLoadingBays + 1<LoadingBay>
+    member _.AllocLoadingBay () = freeLoadingBays <- freeLoadingBays - 1<LoadingBay>
+    member _.FreeLoadingBay () = freeLoadingBays <- freeLoadingBays + 1<LoadingBay>
 
 
 type Lifts (liftCount: int) =
@@ -148,8 +185,8 @@ type Lifts (liftCount: int) =
     member val MoveQueue = Queue<MoveRequest>()
 
     member _.FreeLifts = freeLifts
-    member _.AllocLift = freeLifts <- freeLifts - 1<Lift>
-    member _.FreeLift = freeLifts <- freeLifts + 1<Lift>
+    member _.AllocLift () = freeLifts <- freeLifts - 1<Lift>
+    member _.FreeLift () = freeLifts <- freeLifts + 1<Lift>
 
 type SiteConfig = {
     ReachLiftCount : int
@@ -194,16 +231,20 @@ type Site (parts: Part seq, trailers: Trailer seq, config: SiteConfig) =
 [<RequireQualifiedAccess>]
 type Act =
     | TrailerArrives of Trailer
-    | MoveCompletes of MoveRequest
+    | CompleteMove of MoveRequest
     | LoadReplenishOrder of ReplenishOrder
-    | OrderComplets of OrderCompletes
+    | CompleteOrder of CompleteOrder
 
 [<RequireQualifiedAccess>]
 type Msg =
+    | LoadingBayRequested
     | LoadingBayAssigned of Trailer
     | ReplenishOrderLoaded of ReplenishOrder
     | PalletDeliveredToTrailer of int<TrailerIdx>
     | OrderPlaced of OrderPlaced
+    | ResourceFreed of ResourceType
+    | ReplenishOrderDelivered
+    | InventoryAdded of int<PartIdx>
 
 
 type State (initialId: int, startTime: DateTime, site: Site) =
